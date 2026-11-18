@@ -1,0 +1,12 @@
+{
+  "name": "plan-do-see-diary",
+  "version": "1.0.0",
+  "description": "Plan-Do-See 다이어리: 계획·실행·회고 데이터 연계 (로그인 없음, 공개 가능한 내용만 입력)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning test/smoke.test.js"
+  },
+  "engines": { "node": ">=22.13" },
+  "license": "MIT"
+}
