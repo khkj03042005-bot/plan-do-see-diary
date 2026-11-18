@@ -1,6 +1,6 @@
 {
   "schema": "pds-schema-v2",
-  "database": "SQLite (server-side file, path from DB_PATH env, default data/pds.db)",
+  "database": "PostgreSQL (server-side database, connection string from DATABASE_URL env; tables auto-created at startup)",
   "date_rules": {
     "calendar_date": "YYYY-MM-DD, Asia/Seoul(KST) 달력 날짜. 계획 기간(period_start/period_end)과 마감일(due_date)에 사용",
     "timestamp": "ISO-8601 UTC 문자열(예: 2026-11-18T03:00:00.000Z). 저장은 항상 UTC, 화면 표시는 항상 KST(UTC+9)로 변환",
@@ -12,7 +12,7 @@
     "plans": {
       "description": "계획의 '현재 값'. 수정하면 이 행이 갱신되고, 이전 값은 plan_revisions 에 남는다.",
       "columns": {
-        "id": "INTEGER PK",
+        "id": "SERIAL PK",
         "title": "TEXT NOT NULL",
         "period_start": "TEXT(YYYY-MM-DD) NOT NULL",
         "period_end": "TEXT(YYYY-MM-DD) NOT NULL, >= period_start",
@@ -27,7 +27,7 @@
     "plan_revisions": {
       "description": "계획 수정 이력. revision_no 0 = 최초 계획(생성 시점 값 그대로), 1.. = 각 수정 후 값. 최초 계획은 절대 덮어쓰지 않는다.",
       "columns": {
-        "id": "INTEGER PK", "plan_id": "INTEGER FK -> plans.id ON DELETE CASCADE", "revision_no": "INTEGER NOT NULL",
+        "id": "SERIAL PK", "plan_id": "INTEGER FK -> plans.id ON DELETE CASCADE", "revision_no": "INTEGER NOT NULL",
         "title": "TEXT", "period_start": "TEXT", "period_end": "TEXT", "priority": "TEXT", "success_criteria": "TEXT", "estimated_minutes": "INTEGER",
         "revised_at": "TEXT(ISO UTC)"
       },
@@ -36,7 +36,7 @@
     "tasks": {
       "description": "계획에 속한 할 일",
       "columns": {
-        "id": "INTEGER PK", "plan_id": "INTEGER FK -> plans.id ON DELETE CASCADE", "title": "TEXT NOT NULL",
+        "id": "SERIAL PK", "plan_id": "INTEGER FK -> plans.id ON DELETE CASCADE", "title": "TEXT NOT NULL",
         "status": "TEXT NOT NULL in (todo, doing, done)", "due_date": "TEXT(YYYY-MM-DD) NULL", "priority": "TEXT NOT NULL in (high, medium, low)",
         "estimated_minutes": "INTEGER NOT NULL >= 0 (분)", "created_at": "TEXT(ISO UTC)", "updated_at": "TEXT(ISO UTC)"
       }
@@ -49,18 +49,18 @@
     "runs": {
       "description": "실행 기록. 계획/할 일과 별도 테이블이며 저장해도 plans/tasks 값을 바꾸지 않는다.",
       "columns": {
-        "id": "INTEGER PK", "task_id": "INTEGER FK -> tasks.id ON DELETE CASCADE", "started_at": "TEXT(ISO UTC) NOT NULL", "ended_at": "TEXT(ISO UTC) NOT NULL >= started_at",
+        "id": "SERIAL PK", "task_id": "INTEGER FK -> tasks.id ON DELETE CASCADE", "started_at": "TEXT(ISO UTC) NOT NULL", "ended_at": "TEXT(ISO UTC) NOT NULL >= started_at",
         "actual_minutes": "INTEGER NOT NULL >= 0 (분)", "blocked_reason": "TEXT NULL (막힘 사유)", "created_at": "TEXT(ISO UTC)"
       }
     },
     "completions": {
       "description": "완료 기록. 할 일당 1건만 존재(중복 완료 방지는 DB UNIQUE 제약 + 멱등성 키).",
-      "columns": { "id": "INTEGER PK", "task_id": "INTEGER FK -> tasks.id ON DELETE CASCADE, UNIQUE", "idempotency_key": "TEXT NOT NULL UNIQUE", "completed_at": "TEXT(ISO UTC)" },
+      "columns": { "id": "SERIAL PK", "task_id": "INTEGER FK -> tasks.id ON DELETE CASCADE, UNIQUE", "idempotency_key": "TEXT NOT NULL UNIQUE", "completed_at": "TEXT(ISO UTC)" },
       "unique": ["task_id", "idempotency_key"]
     },
     "retro_notes": {
       "description": "회고에서 정한 개선점 한 줄. applied_plan_id 로 다음 계획에 반영됨을 기록.",
-      "columns": { "id": "INTEGER PK", "plan_id": "INTEGER FK -> plans.id (회고 대상 계획)", "note": "TEXT NOT NULL", "applied_plan_id": "INTEGER NULL FK -> plans.id (반영된 다음 계획)", "created_at": "TEXT(ISO UTC)" }
+      "columns": { "id": "SERIAL PK", "plan_id": "INTEGER FK -> plans.id (회고 대상 계획)", "note": "TEXT NOT NULL", "applied_plan_id": "INTEGER NULL FK -> plans.id (반영된 다음 계획)", "created_at": "TEXT(ISO UTC)" }
     }
   },
   "relations": [

@@ -1,13 +1,15 @@
 'use strict';
 const assert = require('node:assert/strict');
-const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+const { Pool } = require('pg');
 const { createApp } = require('../server');
 
+const DB_URL = process.env.TEST_DATABASE_URL;
+if (!DB_URL) { console.error('TEST_DATABASE_URL 이 필요합니다. 예) TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5433/postgres npm test'); process.exit(1); }
+
 (async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pds-'));
-  const dbPath = path.join(dir, 't.db');
+  const schema = 'pds_test_' + Date.now(); // 테스트 전용 격리 스키마
   const FIXED_TODAY = '2026-11-18';
-  let app = createApp({ dbPath, today: () => FIXED_TODAY });
+  let app = await createApp({ databaseUrl: DB_URL, schema, today: () => FIXED_TODAY });
   await new Promise((r) => app.server.listen(0, r));
   const base = () => `http://127.0.0.1:${app.server.address().port}`;
   const call = async (m, u, b) => { const r = await fetch(base() + u, { method: m, headers: b ? { 'Content-Type': 'application/json' } : {}, body: b ? JSON.stringify(b) : undefined }); return { status: r.status, body: await r.json().catch(() => null) }; };
@@ -59,14 +61,14 @@ const { createApp } = require('../server');
   const results = await Promise.all([1, 2, 3, 4].map(() => call('POST', `/api/tasks/${t2.id}/complete`, { idempotency_key: 'same-key' })));
   results.forEach((x) => assert.equal(x.status, 200));
   r = await call('POST', `/api/tasks/${t2.id}/complete`, { idempotency_key: 'another-key' }); assert.equal(r.body.duplicate, true);
-  assert.equal(app.db.prepare('SELECT COUNT(*) c FROM completions WHERE task_id = ?').get(t2.id).c, 1);
+  assert.equal((await app.get('SELECT COUNT(*)::int c FROM completions WHERE task_id = ?', t2.id)).c, 1);
   ret = (await call('GET', '/api/retro')).body; assert.equal(ret.summary.done, 2); ok('C21-C22 완료 연속 요청해도 완료 기록 1건, 회고 완료 수 +1');
-  assert.throws(() => app.db.prepare('INSERT INTO completions (task_id, idempotency_key, completed_at) VALUES (?,?,?)').run(t2.id, 'zzz', 'x'), /UNIQUE/); ok('DB UNIQUE 제약이 중복 방지');
+  await assert.rejects(app.run('INSERT INTO completions (task_id, idempotency_key, completed_at) VALUES (?,?,?)', t2.id, 'zzz', 'x'), /unique|duplicate/i); ok('DB UNIQUE 제약이 중복 방지');
   assert.equal((await call('PUT', `/api/tasks/${t3.id}`, { title: 'x', priority: 'low', estimated_minutes: 1, status: 'done' })).status, 400);
   // C11/C12 complete / revert
   r = await call('PUT', `/api/tasks/${t2.id}`, { ...t2, status: 'doing', tags: ['cardio'] }); assert.equal(r.body.status, 'doing');
   ret = (await call('GET', '/api/retro')).body; assert.equal(ret.summary.done, 1);
-  assert.equal(app.db.prepare('SELECT COUNT(*) c FROM completions WHERE task_id = ?').get(t2.id).c, 0);
+  assert.equal((await app.get('SELECT COUNT(*)::int c FROM completions WHERE task_id = ?', t2.id)).c, 0);
   r = await call('POST', `/api/tasks/${t2.id}/complete`, { idempotency_key: 'k2' }); assert.equal(r.body.task.status, 'done'); assert.equal(r.body.duplicate, false);
   ok('C11-C12 완료 처리 / 진행 중으로 되돌리기 / 다시 완료');
 
@@ -106,11 +108,11 @@ const { createApp } = require('../server');
 
   // C34/C35 persistence across restart + export (C36)
   const exp1 = (await call('GET', '/api/export')).body; const tasksBefore = (await call('GET', '/api/tasks')).body.tasks;
-  app.server.close(); app.db.close();
-  app = createApp({ dbPath, today: () => FIXED_TODAY }); await new Promise((rr) => app.server.listen(0, rr));
+  await new Promise((rr) => app.server.close(rr)); await app.close();
+  app = await createApp({ databaseUrl: DB_URL, schema, today: () => FIXED_TODAY }); await new Promise((rr) => app.server.listen(0, rr));
   const tasksAfter = (await call('GET', '/api/tasks')).body.tasks; assert.deepEqual(tasksAfter, tasksBefore);
   const exp2 = (await call('GET', '/api/export')).body; delete exp1.exported_at; delete exp2.exported_at; assert.deepEqual(exp2, exp1);
-  assert.equal(exp1.plans.length, 3); assert.ok(exp1.runs.length === 3 && exp1.completions.length === 2); ok('C34-C35 서버 재시작 후에도 ID·날짜·값·단위 동일');
+  assert.equal(exp1.plans.length, 3); assert.ok(exp1.runs.length === 3 && exp1.completions.length === 2); ok('C34-C35 서버(DB 연결) 재시작 후에도 ID·날짜·값·단위 동일');
   const raw = await fetch(base() + '/api/export'); assert.match(raw.headers.get('content-disposition'), /attachment/); ok('C36 파일 하나로 내보내기');
 
   // C57 literal script string + headers; C01 no auth
@@ -118,6 +120,7 @@ const { createApp } = require('../server');
   const hr = await fetch(base() + '/'); assert.match(hr.headers.get('content-security-policy'), /script-src 'self'/); assert.equal(hr.status, 200); ok('C01 인증 없이 열림 + CSP');
   assert.equal((await fetch(base() + '/contracts/pds-schema-v2.json')).status, 200); assert.equal((await fetch(base() + '/..%2fserver.js')).status, 404); assert.equal((await fetch(base() + '/db.js')).status, 404); ok('정적 파일 경로 이탈 차단');
 
-  app.server.close(); app.db.close(); fs.rmSync(dir, { recursive: true });
+  await new Promise((rr) => app.server.close(rr)); await app.close();
+  const admin = new Pool({ connectionString: DB_URL, ...(/127\.0\.0\.1|localhost/.test(DB_URL) ? { ssl: false } : {}) }); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end();
   console.log(`\nAll ${n} checks passed`);
 })().catch((e) => { console.error(e); process.exit(1); });

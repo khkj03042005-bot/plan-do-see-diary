@@ -1,25 +1,32 @@
 # Plan-Do-See 다이어리 (과제 6)
 
-계획(Plan) → 실행(Do) → 회고(See)를 서버 DB(SQLite)로 연결하는 다이어리. **로그인 기능이 없으므로 링크를 아는 사람은 누구나 볼 수 있습니다. 공개해도 괜찮은 내용만 입력하세요.** (접근 제어는 7번 과제)
+계획(Plan) → 실행(Do) → 회고(See)를 서버 DB(PostgreSQL)로 연결하는 다이어리. **로그인 기능이 없으므로 링크를 아는 사람은 누구나 볼 수 있습니다. 공개해도 괜찮은 내용만 입력하세요.** (접근 제어는 7번 과제)
 
 ## 실행
 ```bash
-node --disable-warning=ExperimentalWarning server.js   # Node 22.13+ (node:sqlite 내장, 외부 패키지 없음)
-# http://localhost:3000   (PORT, DB_PATH 환경변수로 변경)
-npm test                                               # API 통과 기준 자동 검증
+npm install
+export DATABASE_URL='postgres://USER:PASSWORD@HOST/DBNAME?sslmode=require'   # PostgreSQL 접속 문자열 (코드에 적지 않음)
+npm start            # http://localhost:3000  (PORT 환경변수로 변경)
+```
+테이블은 서버 시작 시 자동 생성됩니다(`CREATE TABLE IF NOT EXISTS`).
+
+테스트(로컬 PostgreSQL 필요, 테스트 전용 스키마를 만들었다가 지움):
+```bash
+TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/postgres npm test
 ```
 
-## 배포 (결과물 URL 만들기)
-데이터가 새로고침/재시작 후에도 유지되려면 **DB 파일이 영속 디스크**에 있어야 합니다.
-- Docker: `docker build -t pds . && docker run -p 8080:8080 -v pds-data:/data pds`
-- Render/Fly/Railway 등: Node 22 런타임, Start Command `node --disable-warning=ExperimentalWarning server.js`,
-  영속 디스크를 `/data`에 마운트하고 환경변수 `DB_PATH=/data/pds.db` 설정. (무료 플랜의 임시 디스크는 재배포 시 데이터가 사라집니다.)
+## 배포 (결과물 URL 만들기) — 무료 구성
+서버가 재시작·재배포·잠자기 후 깨어나도 데이터가 유지되도록 **DB는 서버 밖의 PostgreSQL**을 씁니다.
+1. 무료 PostgreSQL(예: Neon) 프로젝트를 만들고 접속 문자열(`postgresql://...?sslmode=require`)을 복사
+2. Render 등에서 Web Service 생성: 이 저장소 연결, Docker(또는 Node) 런타임
+3. 서비스 환경변수에 `DATABASE_URL` = 위 접속 문자열 (비밀값이므로 저장소에는 절대 커밋하지 않음)
+4. 배포 후 `https://<서비스>.onrender.com` 이 결과물 URL
 
 ## 구조
 | 파일 | 역할 |
 |---|---|
 | `server.js` | HTTP 서버 + REST API(계획·할 일·실행 기록·회고·내보내기), 정적 파일 |
-| `db.js` | SQLite 스키마 |
+| `db.js` | PostgreSQL 연결·스키마 |
 | `public/` | 화면(순수 JS, 사용자 입력은 `textContent`로만 렌더링) |
 | `contracts/pds-schema-v2.json` | 테이블·컬럼·관계·날짜 규칙 |
 | `test/smoke.test.js` | 통과 기준 자동 검증 |
