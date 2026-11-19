@@ -9,14 +9,21 @@ if (!DB_URL) { console.error('TEST_DATABASE_URL 이 필요합니다. 예) TEST_D
 (async () => {
   const schema = 'pds_test_' + Date.now(); // 테스트 전용 격리 스키마
   const FIXED_TODAY = '2026-11-18';
-  let app = await createApp({ databaseUrl: DB_URL, schema, today: () => FIXED_TODAY });
+  const appOpts = { databaseUrl: DB_URL, schema, today: () => FIXED_TODAY, bcryptCost: 4 }; // 테스트에서만 해시 비용을 낮춤
+  let app = await createApp(appOpts);
   await new Promise((r) => app.server.listen(0, r));
   const base = () => `http://127.0.0.1:${app.server.address().port}`;
-  const call = async (m, u, b) => { const r = await fetch(base() + u, { method: m, headers: b ? { 'Content-Type': 'application/json' } : {}, body: b ? JSON.stringify(b) : undefined }); return { status: r.status, body: await r.json().catch(() => null) }; };
+  let cookie = ''; // 로그인한 사용자의 세션 쿠키(7번: 모든 자료 API는 로그인 필요)
+  const call = async (m, u, b) => {
+    const r = await fetch(base() + u, { method: m, redirect: 'manual', headers: { 'X-Requested-With': 'diary', ...(b ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) }, body: b ? JSON.stringify(b) : undefined });
+    const sc = r.headers.getSetCookie ? r.headers.getSetCookie()[0] : null; if (sc) cookie = sc.startsWith('sid=;') ? '' : sc.split(';')[0];
+    return { status: r.status, body: await r.json().catch(() => null) };
+  };
   let n = 0; const ok = (name) => console.log(`  ✓ ${String(++n).padStart(2, '0')} ${name}`);
 
+  let r = await call('POST', '/api/signup', { username: 'tester', password: 'Test-pass-12345' }); assert.equal(r.status, 201); assert.ok(cookie.startsWith('sid='));
   // C04~C07 plan fields
-  let r = await call('POST', '/api/plans', { title: '<script>alert(1)</script> 운동', period_start: '2026-11-16', period_end: '2026-11-22', priority: 'high', success_criteria: '주 3회', estimated_minutes: 300 });
+  r = await call('POST', '/api/plans', { title: '<script>alert(1)</script> 운동', period_start: '2026-11-16', period_end: '2026-11-22', priority: 'high', success_criteria: '주 3회', estimated_minutes: 300 });
   assert.equal(r.status, 201); const plan = r.body;
   assert.equal(plan.period_start, '2026-11-16'); assert.equal(plan.priority, 'high'); assert.equal(plan.success_criteria, '주 3회'); assert.equal(plan.estimated_minutes, 300);
   ok('C04-C07 계획에 기간·우선순위·성공 기준·예상 시간 저장');
@@ -109,15 +116,16 @@ if (!DB_URL) { console.error('TEST_DATABASE_URL 이 필요합니다. 예) TEST_D
   // C34/C35 persistence across restart + export (C36)
   const exp1 = (await call('GET', '/api/export')).body; const tasksBefore = (await call('GET', '/api/tasks')).body.tasks;
   await new Promise((rr) => app.server.close(rr)); await app.close();
-  app = await createApp({ databaseUrl: DB_URL, schema, today: () => FIXED_TODAY }); await new Promise((rr) => app.server.listen(0, rr));
+  app = await createApp(appOpts); await new Promise((rr) => app.server.listen(0, rr));
   const tasksAfter = (await call('GET', '/api/tasks')).body.tasks; assert.deepEqual(tasksAfter, tasksBefore);
   const exp2 = (await call('GET', '/api/export')).body; delete exp1.exported_at; delete exp2.exported_at; assert.deepEqual(exp2, exp1);
   assert.equal(exp1.plans.length, 3); assert.ok(exp1.runs.length === 3 && exp1.completions.length === 2); ok('C34-C35 서버(DB 연결) 재시작 후에도 ID·날짜·값·단위 동일');
-  const raw = await fetch(base() + '/api/export'); assert.match(raw.headers.get('content-disposition'), /attachment/); ok('C36 파일 하나로 내보내기');
+  const raw = await fetch(base() + '/api/export', { headers: { Cookie: cookie } }); assert.match(raw.headers.get('content-disposition'), /attachment/); ok('C36 파일 하나로 내보내기');
 
-  // C57 literal script string + headers; C01 no auth
-  const html = await (await fetch(base() + '/')).text(); assert.match(html, /지금은 로그인이 없어 링크를 아는 사람은 누구나 볼 수 있습니다\. 남이 봐도 괜찮은 내용만 넣으세요/); ok('C82 첫 화면 공개 범위 문구');
-  const hr = await fetch(base() + '/'); assert.match(hr.headers.get('content-security-policy'), /script-src 'self'/); assert.equal(hr.status, 200); ok('C01 인증 없이 열림 + CSP');
+  // C57 headers; 7번: 첫 화면은 로그인 화면, 로그인 후 내 화면
+  const html = await (await fetch(base() + '/', { headers: { Cookie: cookie } })).text(); assert.match(html, /내 기록은 로그인한 나에게만 보입니다/); ok('로그인 후 첫 화면에 접근 범위 안내');
+  const anon = await fetch(base() + '/', { redirect: 'manual' }); assert.equal(anon.status, 302); assert.match(anon.headers.get('location'), /\/login$/);
+  const lp = await fetch(base() + '/login'); assert.equal(lp.status, 200); assert.match(await lp.text(), /로그인/); assert.match(lp.headers.get('content-security-policy'), /script-src 'self'/); ok('로그인 없이 / → 로그인 화면, 로그인 화면은 가입 없이 열림 + CSP');
   assert.equal((await fetch(base() + '/contracts/pds-schema-v2.json')).status, 200); assert.equal((await fetch(base() + '/..%2fserver.js')).status, 404); assert.equal((await fetch(base() + '/db.js')).status, 404); ok('정적 파일 경로 이탈 차단');
 
   await new Promise((rr) => app.server.close(rr)); await app.close();

@@ -4,6 +4,19 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 
 // 날짜 규칙: 기간/마감일은 'YYYY-MM-DD'(Asia/Seoul 달력 날짜), 시각은 ISO-8601 UTC('...Z') 문자열. 시간 단위는 모두 '분'.
 const SCHEMA_SQL = `
+-- 7번 과제: 회원·세션. 비밀번호는 bcrypt 해시만 저장하고, 세션 토큰은 SHA-256 해시만 저장한다.
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  pw_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS plans (
   id SERIAL PRIMARY KEY,
   title TEXT NOT NULL,
@@ -56,11 +69,11 @@ CREATE TABLE IF NOT EXISTS runs (
   blocked_reason TEXT,
   created_at TEXT NOT NULL
 );
--- 완료 기록: 할 일당 1건(UNIQUE task_id) + 멱등성 키 UNIQUE. 버튼 비활성화가 아니라 DB 제약으로 중복 방지.
+-- 완료 기록: 할 일당 1건(UNIQUE task_id) + 멱등성 키 UNIQUE(사용자별). 버튼 비활성화가 아니라 DB 제약으로 중복 방지.
 CREATE TABLE IF NOT EXISTS completions (
   id SERIAL PRIMARY KEY,
   task_id INTEGER NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
-  idempotency_key TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL,
   completed_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS retro_notes (
@@ -70,6 +83,21 @@ CREATE TABLE IF NOT EXISTS retro_notes (
   applied_plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL
 );
+-- 소유자(user_id): 6번에서 만든 기존 행은 NULL(주인 없음)로 남고 아무도 볼 수 없다.
+-- scripts/claim-legacy-data.js 로 내 계정에 이관한다(7번).
+ALTER TABLE plans          ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE plan_revisions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE tasks          ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE runs           ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE completions    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE retro_notes    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE completions DROP CONSTRAINT IF EXISTS completions_idempotency_key_key;
+CREATE UNIQUE INDEX IF NOT EXISTS completions_user_key ON completions(user_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_plans_user ON plans(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_id);
+CREATE INDEX IF NOT EXISTS idx_notes_user ON retro_notes(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 `;

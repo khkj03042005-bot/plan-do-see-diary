@@ -1,17 +1,19 @@
 {
   "name": "plan-do-see-diary",
   "version": "1.0.0",
-  "description": "Plan-Do-See 다이어리: 계획·실행·회고 데이터 연계 (PostgreSQL, 로그인 없음, 공개 가능한 내용만 입력)",
+  "description": "Plan-Do-See 다이어리: 계획·실행·회고 데이터 연계 (PostgreSQL, 회원 인증·세션·사용자별 접근 제어)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/smoke.test.js"
+    "test": "node test/smoke.test.js",
+    "verify": "node scripts/verify-access.js"
   },
   "engines": {
     "node": ">=20"
   },
   "license": "MIT",
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "pg": "^8.23.1"
   }
 }

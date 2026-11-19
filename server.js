@@ -2,6 +2,9 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const bcrypt = require('bcryptjs');
 const { openDb } = require('./db');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -19,6 +22,17 @@ const SORT_SQL = {
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const bad = (m) => new HttpError(400, m);
 const nowIso = () => new Date().toISOString();
+// ---------- 인증 컨텍스트 ----------
+// 요청마다 세션에서 찾은 사용자만 reqCtx 에 넣는다. 주소·헤더·본문에 적힌 사용자 정보는 쓰지 않는다.
+const reqCtx = new AsyncLocalStorage();
+const uid = () => { const s = reqCtx.getStore(); if (!s || !s.user) throw new HttpError(401, '로그인이 필요합니다.'); return s.user.id; };
+const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
+const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const parseCookies = (req) => Object.fromEntries((req.headers.cookie || '').split(';').map((x) => x.trim()).filter(Boolean).map((x) => { const i = x.indexOf('='); return [x.slice(0, i), x.slice(i + 1)]; }));
+function passwordError(pw) {
+  if (typeof pw !== 'string' || Buffer.byteLength(pw) < 8 || Buffer.byteLength(pw) > 72) return '비밀번호는 8자 이상 72바이트 이하여야 합니다.';
+  return null;
+}
 const kstToday = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 
 // ---------- validation ----------
@@ -65,33 +79,102 @@ function planFields(b) {
   return f;
 }
 
-async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today = kstToday } = {}) {
+async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today = kstToday, sessionTtlSeconds = Number(process.env.SESSION_TTL_SECONDS) || 3600, bcryptCost = Number(process.env.BCRYPT_COST) || 12 } = {}) {
   const { pool, all, get, run, tx, close } = await openDb(databaseUrl, { schema });
 
+  // ---------- 회원·세션 ----------
+  const dummyHash = bcrypt.hash('dummy-password', bcryptCost); // 없는 아이디도 같은 시간 들여 비교(응답 시간 차이 완화)
+  const cookieFor = (req, token, maxAge) => {
+    const secure = process.env.COOKIE_SECURE === '1' || req.headers['x-forwarded-proto'] === 'https';
+    return `sid=${token}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
+  };
+  async function userFromReq(req) {
+    const tok = parseCookies(req).sid;
+    if (!tok) return null;
+    return (await get('SELECT u.id, u.username, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?', hashToken(tok), nowIso())) || null;
+  }
+  async function issueSession(req, userId) {
+    const tok = crypto.randomBytes(32).toString('base64url'); const c = Date.now();
+    await run('DELETE FROM sessions WHERE expires_at <= ?', new Date(c).toISOString()); // 만료된 세션 정리
+    await run('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)', hashToken(tok), userId, new Date(c).toISOString(), new Date(c + sessionTtlSeconds * 1000).toISOString());
+    return cookieFor(req, tok, sessionTtlSeconds);
+  }
+  const clearCookie = (req) => cookieFor(req, '', 0);
+  const verifyPw = async (userId, pw) => {
+    const row = await get('SELECT pw_hash FROM users WHERE id = ?', userId);
+    return typeof pw === 'string' && !!row && bcrypt.compare(pw, row.pw_hash);
+  };
+  // 인증 라우트: 처리했으면 true
+  async function authRoutes(req, res, url, user, body) {
+    const sj = (st, o, h) => sendJson(res, st, o, h);
+    if (req.method === 'POST' && url.pathname === '/api/signup') {
+      const username = String(body.username || '').trim().toLowerCase();
+      if (!USERNAME_RE.test(username)) throw bad('아이디는 영문 소문자·숫자·밑줄 3~32자입니다.');
+      const pe = passwordError(body.password); if (pe) throw bad(pe);
+      const hash = await bcrypt.hash(body.password, bcryptCost);
+      let row;
+      try { row = await get('INSERT INTO users (username, pw_hash, created_at) VALUES (?,?,?) RETURNING id', username, hash, nowIso()); }
+      catch (e) { if (e.code === '23505') throw new HttpError(409, '이미 사용 중인 아이디입니다.'); throw e; }
+      sj(201, { ok: true, username }, { 'Set-Cookie': await issueSession(req, row.id) }); return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/login') {
+      const username = String(body.username || '').trim().toLowerCase();
+      const row = await get('SELECT id, pw_hash FROM users WHERE username = ?', username);
+      const ok = await bcrypt.compare(typeof body.password === 'string' ? body.password : '', row ? row.pw_hash : await dummyHash);
+      // 아이디 없음 / 비밀번호 틀림: 같은 문구·같은 상태 코드
+      if (!row || !ok) throw new HttpError(401, '아이디 또는 비밀번호가 올바르지 않습니다.');
+      sj(200, { ok: true, username }, { 'Set-Cookie': await issueSession(req, row.id) }); return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/logout') {
+      const tok = parseCookies(req).sid;
+      if (tok) await run('DELETE FROM sessions WHERE token_hash = ?', hashToken(tok)); // 서버에서 세션 무효화
+      sj(200, { ok: true }, { 'Set-Cookie': clearCookie(req) }); return true;
+    }
+    if (url.pathname === '/api/me' && req.method === 'GET') {
+      if (!user) throw new HttpError(401, '로그인이 필요합니다.');
+      sj(200, { username: user.username, session_expires_at: user.expires_at }); return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/password') {
+      if (!user) throw new HttpError(401, '로그인이 필요합니다.');
+      if (!(await verifyPw(user.id, body.old_password))) throw new HttpError(403, '현재 비밀번호가 올바르지 않습니다.');
+      const pe = passwordError(body.new_password); if (pe) throw bad(pe);
+      const hash = await bcrypt.hash(body.new_password, bcryptCost);
+      await tx(async () => { await run('UPDATE users SET pw_hash = ? WHERE id = ?', hash, user.id); await run('DELETE FROM sessions WHERE user_id = ?', user.id); }); // 이전 세션 모두 무효화
+      sj(200, { ok: true, message: '비밀번호가 변경되었습니다. 다시 로그인하세요.' }, { 'Set-Cookie': clearCookie(req) }); return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/account/delete') {
+      if (!user) throw new HttpError(401, '로그인이 필요합니다.');
+      if (!(await verifyPw(user.id, body.password))) throw new HttpError(403, '비밀번호가 올바르지 않습니다.');
+      await run('DELETE FROM users WHERE id = ?', user.id); // 세션·계획·할 일·실행 기록·완료 기록·회고가 ON DELETE CASCADE 로 함께 삭제
+      sj(200, { ok: true, message: '계정과 모든 기록이 삭제되었습니다.' }, { 'Set-Cookie': clearCookie(req) }); return true;
+    }
+    return false;
+  }
+
   // ---------- plans ----------
-  const getPlan = async (id) => { const p = await get('SELECT * FROM plans WHERE id = ?', id); if (!p) throw new HttpError(404, '계획을 찾을 수 없습니다.'); return p; };
+  const getPlan = async (id) => { const p = await get('SELECT * FROM plans WHERE id = ? AND user_id = ?', id, uid()); if (!p) throw new HttpError(404, '계획을 찾을 수 없습니다.'); return p; };
   async function planDetail(id) {
     const p = await getPlan(id);
     p.revisions = await all('SELECT * FROM plan_revisions WHERE plan_id = ? ORDER BY revision_no', id);
-    p.task_count = (await get('SELECT COUNT(*)::int c FROM tasks WHERE plan_id = ?', id)).c;
-    p.improvement = p.improvement_note_id ? (await get('SELECT id, note, plan_id AS from_plan_id FROM retro_notes WHERE id = ?', p.improvement_note_id)) || null : null;
+    p.task_count = (await get('SELECT COUNT(*)::int c FROM tasks WHERE plan_id = ? AND user_id = ?', id, uid())).c;
+    p.improvement = p.improvement_note_id ? (await get('SELECT id, note, plan_id AS from_plan_id FROM retro_notes WHERE id = ? AND user_id = ?', p.improvement_note_id, uid())) || null : null;
     return p;
   }
-  const REV_SQL = 'INSERT INTO plan_revisions (plan_id, revision_no, title, period_start, period_end, priority, success_criteria, estimated_minutes, revised_at) VALUES (?,?,?,?,?,?,?,?,?)';
+  const REV_SQL = 'INSERT INTO plan_revisions (plan_id, revision_no, title, period_start, period_end, priority, success_criteria, estimated_minutes, revised_at, user_id) VALUES (?,?,?,?,?,?,?,?,?,?)';
   async function createPlan(b) {
     const f = planFields(b); const t = nowIso();
     return tx(async () => {
-      const r = await get('INSERT INTO plans (title, period_start, period_end, priority, success_criteria, estimated_minutes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?) RETURNING id', f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, t);
-      await run(REV_SQL, r.id, 0, f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t);
+      const r = await get('INSERT INTO plans (title, period_start, period_end, priority, success_criteria, estimated_minutes, created_at, updated_at, user_id) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id', f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, t, uid());
+      await run(REV_SQL, r.id, 0, f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, uid());
       return planDetail(r.id);
     });
   }
   async function updatePlan(id, b) {
     await getPlan(id); const f = planFields(b); const t = nowIso();
     return tx(async () => {
-      await run('UPDATE plans SET title=?, period_start=?, period_end=?, priority=?, success_criteria=?, estimated_minutes=?, updated_at=? WHERE id=?', f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, id);
+      await run('UPDATE plans SET title=?, period_start=?, period_end=?, priority=?, success_criteria=?, estimated_minutes=?, updated_at=? WHERE id=? AND user_id=?', f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, id, uid());
       const n = ((await get('SELECT MAX(revision_no) m FROM plan_revisions WHERE plan_id = ?', id)).m ?? -1) + 1;
-      await run(REV_SQL, id, n, f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t);
+      await run(REV_SQL, id, n, f.title, f.period_start, f.period_end, f.priority, f.success_criteria, f.estimated_minutes, t, uid());
       return planDetail(id);
     });
   }
@@ -102,7 +185,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
         (SELECT completed_at FROM completions c WHERE c.task_id = t.id) AS completed_at,
         (SELECT COUNT(*)::int FROM runs r WHERE r.task_id = t.id) AS run_count,
         (SELECT COALESCE(SUM(actual_minutes),0)::int FROM runs r WHERE r.task_id = t.id) AS actual_minutes
-      FROM tasks t JOIN plans p ON p.id = t.plan_id WHERE ${where} ORDER BY ${order}`, ...params);
+      FROM tasks t JOIN plans p ON p.id = t.plan_id WHERE t.user_id = ? AND ${where} ORDER BY ${order}`, uid(), ...params);
     const tagRows = rows.length ? await all('SELECT task_id, tag FROM task_tags WHERE task_id = ANY(?::int[]) ORDER BY tag', rows.map((r) => r.id)) : [];
     const tags = new Map();
     tagRows.forEach((x) => { if (!tags.has(x.task_id)) tags.set(x.task_id, []); tags.get(x.task_id).push(x.tag); });
@@ -142,7 +225,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
   async function createTask(b) {
     const f = taskFields(b, false); await getPlan(f.plan_id); const t = nowIso();
     return tx(async () => {
-      const r = await get("INSERT INTO tasks (plan_id, title, status, due_date, priority, estimated_minutes, created_at, updated_at) VALUES (?,?,'todo',?,?,?,?,?) RETURNING id", f.plan_id, f.title, f.due_date, f.priority, f.estimated_minutes, t, t);
+      const r = await get("INSERT INTO tasks (plan_id, title, status, due_date, priority, estimated_minutes, created_at, updated_at, user_id) VALUES (?,?,'todo',?,?,?,?,?,?) RETURNING id", f.plan_id, f.title, f.due_date, f.priority, f.estimated_minutes, t, t, uid());
       await setTags(r.id, f.tags); return getTask(r.id);
     });
   }
@@ -154,8 +237,8 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
       if (status === 'done') throw bad('완료 처리는 완료 버튼(/complete)을 사용하세요.');
     }
     return tx(async () => {
-      if (cur.status === 'done' && status !== 'done') await run('DELETE FROM completions WHERE task_id = ?', id);
-      await run('UPDATE tasks SET title=?, due_date=?, priority=?, estimated_minutes=?, status=?, updated_at=? WHERE id=?', f.title, f.due_date, f.priority, f.estimated_minutes, status, nowIso(), id);
+      if (cur.status === 'done' && status !== 'done') await run('DELETE FROM completions WHERE task_id = ? AND user_id = ?', id, uid());
+      await run('UPDATE tasks SET title=?, due_date=?, priority=?, estimated_minutes=?, status=?, updated_at=? WHERE id=? AND user_id=?', f.title, f.due_date, f.priority, f.estimated_minutes, status, nowIso(), id, uid());
       await setTags(id, f.tags); return getTask(id);
     });
   }
@@ -163,19 +246,19 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     await getTask(id);
     const key = str(b.idempotency_key, '멱등성 키(idempotency_key)', 100);
     return tx(async () => {
-      const byKey = await get('SELECT task_id FROM completions WHERE idempotency_key = ?', key);
+      const byKey = await get('SELECT task_id FROM completions WHERE idempotency_key = ? AND user_id = ?', key, uid());
       if (byKey && byKey.task_id !== id) throw new HttpError(409, '이 멱등성 키는 다른 할 일에 사용되었습니다.');
       // task_id / idempotency_key UNIQUE 제약 → 동시에 여러 번 눌러도 1건만 삽입된다
-      const ins = await run('INSERT INTO completions (task_id, idempotency_key, completed_at) VALUES (?,?,?) ON CONFLICT DO NOTHING', id, key, nowIso());
-      await run("UPDATE tasks SET status='done', updated_at=? WHERE id=? AND status != 'done'", nowIso(), id);
+      const ins = await run('INSERT INTO completions (task_id, idempotency_key, completed_at, user_id) VALUES (?,?,?,?) ON CONFLICT DO NOTHING', id, key, nowIso(), uid());
+      await run("UPDATE tasks SET status='done', updated_at=? WHERE id=? AND user_id=? AND status != 'done'", nowIso(), id, uid());
       return { duplicate: ins.rowCount === 0, task: await getTask(id) };
     });
   }
-  async function deleteTask(id) { await getTask(id); await run('DELETE FROM tasks WHERE id = ?', id); return { deleted: true }; }
+  async function deleteTask(id) { await getTask(id); await run('DELETE FROM tasks WHERE id = ? AND user_id = ?', id, uid()); return { deleted: true }; }
 
   // ---------- runs ----------
   async function listRuns(q) {
-    const w = ['1=1']; const p = [];
+    const w = ['r.user_id = ?']; const p = [uid()];
     if (q.task_id) { w.push('r.task_id = ?'); p.push(intId(q.task_id, '할 일 ID')); }
     if (q.plan_id) { w.push('t.plan_id = ?'); p.push(intId(q.plan_id, '계획 ID')); }
     return all(`SELECT r.*, t.title AS task_title, t.plan_id, p.title AS plan_title FROM runs r JOIN tasks t ON t.id = r.task_id JOIN plans p ON p.id = t.plan_id WHERE ${w.join(' AND ')} ORDER BY r.started_at DESC, r.id DESC`, ...p);
@@ -187,17 +270,17 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     let actual = minutes(b.actual_minutes, '실제 소요 시간', false);
     if (actual === null) actual = Math.round((Date.parse(ended) - Date.parse(started)) / 60000);
     const blocked = str(b.blocked_reason, '막힘 사유', 500, false) || null;
-    return get('INSERT INTO runs (task_id, started_at, ended_at, actual_minutes, blocked_reason, created_at) VALUES (?,?,?,?,?,?) RETURNING *', task.id, started, ended, actual, blocked, nowIso());
+    return get('INSERT INTO runs (task_id, started_at, ended_at, actual_minutes, blocked_reason, created_at, user_id) VALUES (?,?,?,?,?,?,?) RETURNING *', task.id, started, ended, actual, blocked, nowIso(), uid());
   }
   async function deleteRun(id) {
-    const r = await run('DELETE FROM runs WHERE id = ?', id);
+    const r = await run('DELETE FROM runs WHERE id = ? AND user_id = ?', id, uid());
     if (!r.rowCount) throw new HttpError(404, '실행 기록을 찾을 수 없습니다.');
     return { deleted: true };
   }
 
   // ---------- retro ----------
   async function scopePlans(q) {
-    const w = ['1=1']; const p = [];
+    const w = ['user_id = ?']; const p = [uid()];
     if (q.plan_id) { w.push('id = ?'); p.push(intId(q.plan_id, '계획 ID')); }
     if (q.from) { w.push('period_end >= ?'); p.push(date(q.from, '시작 기준일')); }
     if (q.to) { w.push('period_start <= ?'); p.push(date(q.to, '종료 기준일')); }
@@ -212,7 +295,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     m.overdue = tasks.filter((t) => t.overdue).length; // 완료한 할 일은 지연으로 세지 않음 → 중복 집계 없음
     m.estimated_minutes = tasks.reduce((s, t) => s + t.estimated_minutes, 0);
     m.actual_minutes = tasks.reduce((s, t) => s + t.actual_minutes, 0);
-    m.blocked = (await get("SELECT COUNT(DISTINCT r.task_id)::int c FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.plan_id = ANY(?::int[]) AND r.blocked_reason IS NOT NULL AND TRIM(r.blocked_reason) != ''", planIds)).c;
+    m.blocked = (await get("SELECT COUNT(DISTINCT r.task_id)::int c FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.plan_id = ANY(?::int[]) AND t.user_id = ? AND r.user_id = ? AND r.blocked_reason IS NOT NULL AND TRIM(r.blocked_reason) != ''", planIds, uid(), uid())).c;
     m.diff_minutes = m.tasks ? m.actual_minutes - m.estimated_minutes : 0;
     return m;
   }
@@ -220,7 +303,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     const plans = await scopePlans(q);
     const summary = await metricsFor(plans.map((p) => p.id));
     const per_plan = [];
-    for (const p of plans) per_plan.push({ plan: p, metrics: await metricsFor([p.id]), notes: await all('SELECT * FROM retro_notes WHERE plan_id = ? ORDER BY id', p.id) });
+    for (const p of plans) per_plan.push({ plan: p, metrics: await metricsFor([p.id]), notes: await all('SELECT * FROM retro_notes WHERE plan_id = ? AND user_id = ? ORDER BY id', p.id, uid()) });
     return { today: today(), unit: 'minutes', scope: { plan_id: q.plan_id || null, from: q.from || null, to: q.to || null }, summary, per_plan };
   }
   const METRIC_LABEL = {
@@ -239,7 +322,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     const plans = await scopePlans(q); const ids = plans.map((p) => p.id);
     const ev = { metric, label: METRIC_LABEL[metric][0], rule: METRIC_LABEL[metric][1], plans: [], tasks: [], runs: [] };
     const taskAll = ids.length ? await taskRows('t.plan_id = ANY(?::int[])', [ids]) : [];
-    const runsAll = ids.length ? await all('SELECT r.*, t.title AS task_title, t.plan_id FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.plan_id = ANY(?::int[]) ORDER BY r.started_at, r.id', ids) : [];
+    const runsAll = ids.length ? await all('SELECT r.*, t.title AS task_title, t.plan_id FROM runs r JOIN tasks t ON t.id = r.task_id WHERE t.plan_id = ANY(?::int[]) AND r.user_id = ? ORDER BY r.started_at, r.id', ids, uid()) : [];
     if (metric === 'plans') ev.plans = plans;
     else if (metric === 'tasks' || metric === 'estimated_minutes') ev.tasks = taskAll;
     else if (metric === 'done') ev.tasks = taskAll.filter((t) => t.status === 'done');
@@ -251,10 +334,10 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
   }
   async function createNote(b) {
     const planId = intId(b.plan_id, '계획 ID'); await getPlan(planId); const note = str(b.note, '개선점', 500);
-    return get('INSERT INTO retro_notes (plan_id, note, created_at) VALUES (?,?,?) RETURNING *', planId, note, nowIso());
+    return get('INSERT INTO retro_notes (plan_id, note, created_at, user_id) VALUES (?,?,?,?) RETURNING *', planId, note, nowIso(), uid());
   }
   async function applyNote(id, b) {
-    const n = await get('SELECT * FROM retro_notes WHERE id = ?', id); if (!n) throw new HttpError(404, '개선점을 찾을 수 없습니다.');
+    const n = await get('SELECT * FROM retro_notes WHERE id = ? AND user_id = ?', id, uid()); if (!n) throw new HttpError(404, '개선점을 찾을 수 없습니다.');
     return tx(async () => {
       let target = b.plan_id ? intId(b.plan_id, '계획 ID') : null;
       if (target) await getPlan(target);
@@ -265,9 +348,9 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
         target = (await createPlan({ title: `${src.title} (다음 계획)`, period_start: s.toISOString().slice(0, 10), period_end: e.toISOString().slice(0, 10), priority: src.priority, success_criteria: src.success_criteria, estimated_minutes: src.estimated_minutes })).id;
       }
       if (target === n.plan_id) throw bad('다음 계획은 회고 대상 계획과 달라야 합니다.');
-      await run('UPDATE retro_notes SET applied_plan_id = ? WHERE id = ?', target, id);
-      await run('UPDATE plans SET improvement_note_id = ?, updated_at = ? WHERE id = ?', id, nowIso(), target);
-      return { note: await get('SELECT * FROM retro_notes WHERE id = ?', id), plan: await planDetail(target) };
+      await run('UPDATE retro_notes SET applied_plan_id = ? WHERE id = ? AND user_id = ?', target, id, uid());
+      await run('UPDATE plans SET improvement_note_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', id, nowIso(), target, uid());
+      return { note: await get('SELECT * FROM retro_notes WHERE id = ? AND user_id = ?', id, uid()), plan: await planDetail(target) };
     });
   }
 
@@ -276,9 +359,9 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
     const tasks = (await taskRows()).map(({ plan_title, run_count, actual_minutes, overdue, ...t }) => t);
     return {
       format: 'pds-export-v2', exported_at: nowIso(), timezone_note: 'dates=YYYY-MM-DD (Asia/Seoul), timestamps=ISO-8601 UTC, durations=minutes',
-      plans: await all('SELECT * FROM plans ORDER BY id'), plan_revisions: await all('SELECT * FROM plan_revisions ORDER BY plan_id, revision_no'),
-      tasks, runs: await all('SELECT * FROM runs ORDER BY id'),
-      completions: await all('SELECT * FROM completions ORDER BY id'), retro_notes: await all('SELECT * FROM retro_notes ORDER BY id'),
+      plans: await all('SELECT * FROM plans WHERE user_id = ? ORDER BY id', uid()), plan_revisions: await all('SELECT * FROM plan_revisions WHERE user_id = ? ORDER BY plan_id, revision_no', uid()),
+      tasks, runs: await all('SELECT * FROM runs WHERE user_id = ? ORDER BY id', uid()),
+      completions: await all('SELECT * FROM completions WHERE user_id = ? ORDER BY id', uid()), retro_notes: await all('SELECT * FROM retro_notes WHERE user_id = ? ORDER BY id', uid()),
       retro: await retro({}),
     };
   }
@@ -287,11 +370,11 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
   const id = (s) => intId(s);
   const routes = [
     ['GET', /^\/api\/health$/, async () => { await get('SELECT 1 AS ok'); return { ok: true }; }],
-    ['GET', /^\/api\/plans$/, async () => { const rows = await all('SELECT id FROM plans ORDER BY period_start DESC, id DESC'); const out = []; for (const r of rows) out.push(await planDetail(r.id)); return out; }],
+    ['GET', /^\/api\/plans$/, async () => { const rows = await all('SELECT id FROM plans WHERE user_id = ? ORDER BY period_start DESC, id DESC', uid()); const out = []; for (const r of rows) out.push(await planDetail(r.id)); return out; }],
     ['POST', /^\/api\/plans$/, (_m, _q, b) => createPlan(b), 201],
     ['GET', /^\/api\/plans\/(\d+)$/, (m) => planDetail(id(m[1]))],
     ['PUT', /^\/api\/plans\/(\d+)$/, (m, _q, b) => updatePlan(id(m[1]), b)],
-    ['DELETE', /^\/api\/plans\/(\d+)$/, async (m) => { await getPlan(id(m[1])); await run('DELETE FROM plans WHERE id = ?', id(m[1])); return { deleted: true }; }],
+    ['DELETE', /^\/api\/plans\/(\d+)$/, async (m) => { await getPlan(id(m[1])); await run('DELETE FROM plans WHERE id = ? AND user_id = ?', id(m[1]), uid()); return { deleted: true }; }],
     ['GET', /^\/api\/tasks$/, (_m, q) => listTasks(q)],
     ['POST', /^\/api\/tasks$/, (_m, _q, b) => createTask(b), 201],
     ['GET', /^\/api\/tasks\/(\d+)$/, (m) => getTask(id(m[1]))],
@@ -310,7 +393,7 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
 
   const SEC = { 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
   const send = (res, status, body, headers = {}) => { res.writeHead(status, { ...SEC, ...headers }); res.end(body); };
-  const sendJson = (res, status, obj, headers = {}) => send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+  const sendJson = (res, status, obj, headers = {}) => send(res, status, JSON.stringify(obj, (k, v) => (k === 'user_id' ? undefined : v)), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   const readBody = (req) => new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => { size += c.length; if (size > 1e6) { reject(new HttpError(413, '요청이 너무 큽니다.')); req.destroy(); } else chunks.push(c); });
@@ -321,12 +404,18 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://x'); const q = Object.fromEntries(url.searchParams);
+      const user = await userFromReq(req);   // 사용자는 오직 세션 쿠키로만 결정한다
+      reqCtx.enterWith({ user });
       if (url.pathname.startsWith('/api/')) {
+        // 상태를 바꾸는 요청은 커스텀 헤더 필수(다른 사이트의 폼 전송 차단) + SameSite=Strict 쿠키
+        if (!['GET', 'HEAD'].includes(req.method) && req.headers['x-requested-with'] !== 'diary') throw bad('잘못된 요청입니다.');
+        const reqBody = ['POST', 'PUT'].includes(req.method) ? await readBody(req) : {}; // 본문은 한 번만 읽는다
+        if (await authRoutes(req, res, url, user, reqBody)) return;
+        if (url.pathname !== '/api/health' && !user) throw new HttpError(401, '로그인이 필요합니다.');
         for (const [method, re, fn, okStatus] of routes) {
           const m = re.exec(url.pathname);
           if (m && method === req.method) {
-            const body = ['POST', 'PUT'].includes(method) ? await readBody(req) : {};
-            const out = await fn(m, q, body);
+            const out = await fn(m, q, reqBody);
             if (url.pathname === '/api/export') return sendJson(res, 200, out, { 'Content-Disposition': 'attachment; filename="pds-diary-export.json"' });
             return sendJson(res, okStatus || 200, out);
           }
@@ -335,13 +424,18 @@ async function createApp({ databaseUrl = process.env.DATABASE_URL, schema, today
         throw new HttpError(404, '존재하지 않는 API입니다.');
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, '허용되지 않는 메서드입니다.');
-      const rel = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
+      // 화면 게이트: 로그인 안 했으면 내 자료 화면(/) 대신 로그인 화면으로 보낸다
+      const redirect = (to) => send(res, 302, '', { Location: to, 'Cache-Control': 'no-store' });
+      if ((url.pathname === '/' || url.pathname === '/index.html') && !user) return redirect('/login');
+      if ((url.pathname === '/login' || url.pathname === '/signup') && user) return redirect('/');
+      const PAGES = { '/login': '/login.html', '/signup': '/signup.html' };
+      const rel = url.pathname === '/' ? '/index.html' : (PAGES[url.pathname] || decodeURIComponent(url.pathname));
       let file = path.normalize(path.join(PUBLIC_DIR, rel));
       if (!file.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
         if (rel.startsWith('/contracts/')) file = path.normalize(path.join(__dirname, rel)); else throw new HttpError(404, '찾을 수 없습니다.');
         if (!file.startsWith(path.join(__dirname, 'contracts') + path.sep) || !fs.existsSync(file)) throw new HttpError(404, '찾을 수 없습니다.');
       }
-      send(res, 200, fs.readFileSync(file), { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      send(res, 200, fs.readFileSync(file), { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': path.extname(file) === '.html' ? 'no-store' : 'no-cache' });
     } catch (e) {
       const status = e.status || (e.code === '23505' ? 409 : 500);
       if (status === 500) console.error(e);

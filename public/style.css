@@ -35,3 +35,6 @@ table { width:100%; border-collapse:collapse; font-size:14px; } th, td { border-
 details { margin-top:6px; } summary { cursor:pointer; color:var(--brand); }
 pre.lit { white-space:pre-wrap; word-break:break-word; }
 footer { padding-bottom:30px; margin-top:24px; }
+main.narrow { max-width: 420px; }
+.msg { color: var(--bad); min-height: 1.2em; margin: 4px 0; }
+#whoami button { margin-left: 8px; }

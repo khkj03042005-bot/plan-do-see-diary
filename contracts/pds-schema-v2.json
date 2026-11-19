@@ -8,6 +8,16 @@
     "overdue": "status != 'done' 이고 due_date < 서울 시간 기준 오늘 날짜. 완료한 할 일은 지연으로 세지 않음",
     "id": "정수 AUTOINCREMENT. 수정해도 불변, 새로고침 후에도 동일"
   },
+  "auth_v7": {
+    "description": "7번 과제 추가분. 모든 자료 행은 소유자(user_id)를 가지고, 서버는 세션에서 찾은 사용자만 소유자로 인정한다.",
+    "tables": {
+      "users": { "id": "SERIAL PK", "username": "TEXT UNIQUE NOT NULL (영문 소문자·숫자·밑줄 3~32자)", "pw_hash": "TEXT NOT NULL (bcrypt 해시. 비밀번호 원문은 저장하지 않음)", "created_at": "TEXT(ISO UTC)" },
+      "sessions": { "token_hash": "TEXT PK (세션 토큰의 SHA-256. 토큰 원문은 저장하지 않음)", "user_id": "INTEGER FK -> users.id ON DELETE CASCADE", "created_at": "TEXT(ISO UTC)", "expires_at": "TEXT(ISO UTC) 만료 시각(기본 발급 후 1시간)" }
+    },
+    "ownership": "plans, plan_revisions, tasks, runs, completions, retro_notes 에 user_id INTEGER FK -> users.id ON DELETE CASCADE 추가. 6번에서 만든 기존 행은 user_id NULL(주인 없음)이며 scripts/claim-legacy-data.js 로 내 계정에 이관한다. 계정을 삭제하면 CASCADE 로 모든 자료가 함께 삭제된다.",
+    "completions_unique": "idempotency_key 는 전역 UNIQUE 가 아니라 (user_id, idempotency_key) UNIQUE. task_id UNIQUE 는 그대로.",
+    "export": "내보내기 형식(pds-export-v2)은 그대로이며 user_id 는 포함하지 않는다."
+  },
   "tables": {
     "plans": {
       "description": "계획의 '현재 값'. 수정하면 이 행이 갱신되고, 이전 값은 plan_revisions 에 남는다.",

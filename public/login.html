@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>로그인 · Plan-Do-See 다이어리</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top"><h1>Plan-Do-See 다이어리 · 로그인</h1></header>
+  <main class="narrow">
+    <form id="auth-form" class="card" data-mode="login" aria-label="로그인">
+      <label>아이디<input name="username" autocomplete="username" required></label>
+      <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+      <p><button type="submit">로그인</button> <a href="/signup">계정이 없으면 회원가입</a></p>
+      <p id="auth-msg" class="msg" role="alert"></p>
+    </form>
+    <p class="muted">내 계획·할 일·실행 기록·회고는 로그인한 본인에게만 보입니다. 이 화면은 가입 없이도 열립니다.</p>
+  </main>
+  <script src="/auth.js"></script>
+</body>
+</html>

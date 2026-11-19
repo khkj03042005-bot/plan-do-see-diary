@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>회원가입 · Plan-Do-See 다이어리</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top"><h1>Plan-Do-See 다이어리 · 회원가입</h1></header>
+  <main class="narrow">
+    <form id="auth-form" class="card" data-mode="signup" aria-label="회원가입">
+      <label>아이디 (영문 소문자·숫자·밑줄 3~32자)<input name="username" autocomplete="username" required></label>
+      <label>비밀번호 (8자 이상)<input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+      <p><button type="submit">가입하고 시작하기</button> <a href="/login">이미 계정이 있으면 로그인</a></p>
+      <p id="auth-msg" class="msg" role="alert"></p>
+    </form>
+    <p class="muted">비밀번호는 복원할 수 없는 해시(bcrypt)로만 저장됩니다. 비밀번호를 잊으면 복구 기능이 없습니다.</p>
+  </main>
+  <script src="/auth.js"></script>
+</body>
+</html>

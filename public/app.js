@@ -20,8 +20,9 @@
   }
   const show = (...kids) => app.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false).map((k) => (k instanceof Node ? k : document.createTextNode(String(k)))));
   async function api(method, url, body) {
-    const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch(url, { method, headers: { 'X-Requested-With': 'diary', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401) { location.href = '/login'; throw new Error('로그인이 필요합니다.'); }
     if (!res.ok) throw new Error(data.error || `요청 실패 (${res.status})`);
     return data;
   }
@@ -231,8 +232,33 @@
       h('p', { class: 'muted' }, '스키마: '), h('a', { href: '/contracts/pds-schema-v2.json' }, 'contracts/pds-schema-v2.json')));
   }
 
+  // ---------- 계정 ----------
+  async function viewAccount() {
+    const me = await api('GET', '/api/me');
+    const pw = h('form', { class: 'grid', onsubmit: guard(async (e) => {
+      e.preventDefault(); const d = formData(pw);
+      const r = await api('POST', '/api/password', { old_password: d.old_password, new_password: d.new_password });
+      alert(r.message); location.href = '/login';
+    }) }, field('현재 비밀번호', h('input', { name: 'old_password', type: 'password', autocomplete: 'current-password', required: true })),
+      field('새 비밀번호 (8자 이상)', h('input', { name: 'new_password', type: 'password', autocomplete: 'new-password', required: true, minlength: 8 })),
+      h('button', { type: 'submit' }, '비밀번호 변경'));
+    const del = h('form', { class: 'grid', onsubmit: guard(async (e) => {
+      e.preventDefault();
+      if (!confirm('계정과 모든 기록(계획·할 일·실행 기록·완료 기록·회고)이 영구 삭제됩니다. 계속할까요?')) return;
+      const r = await api('POST', '/api/account/delete', { password: formData(del).password });
+      alert(r.message); location.href = '/login';
+    }) }, field('비밀번호 확인', h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true })),
+      h('button', { class: 'danger', type: 'submit' }, '계정 삭제'));
+    show(h('h2', {}, '계정'),
+      h('div', { class: 'card' }, h('p', {}, `로그인: ${me.username}`), h('p', { class: 'muted' }, `이 세션은 ${fmtKst(me.session_expires_at)} 에 만료됩니다. 로그아웃하면 서버에서 즉시 무효화됩니다.`),
+        h('button', { class: 'ghost', id: 'logout', onclick: guard(logout) }, '로그아웃')),
+      h('div', { class: 'card' }, h('h3', {}, '비밀번호 변경'), pw, h('p', { class: 'muted' }, '변경하면 이전에 발급된 모든 세션이 무효화되어 다시 로그인해야 합니다.')),
+      h('div', { class: 'card' }, h('h3', {}, '계정 삭제'), h('p', { class: 'notice' }, '계정을 삭제하면 내 계정과 모든 기록(계획·수정 이력·할 일·실행 기록·완료 기록·회고)이 함께 영구 삭제됩니다.'), del));
+  }
+  async function logout() { await api('POST', '/api/logout'); location.href = '/login'; }
+
   // ---------- router ----------
-  const views = { plans: viewPlans, tasks: viewTasks, runs: viewRuns, retro: viewRetro, evidence: viewEvidence, export: viewExport };
+  const views = { plans: viewPlans, tasks: viewTasks, runs: viewRuns, retro: viewRetro, evidence: viewEvidence, export: viewExport, account: viewAccount };
   let seq = 0;
   async function render() {
     const name = views[routeName()] ? routeName() : 'plans'; const my = ++seq;
@@ -240,5 +266,12 @@
     try { await views[name](); } catch (e) { if (my === seq) show(h('p', { class: 'notice' }, '불러오지 못했습니다: ' + e.message)); }
   }
   window.addEventListener('hashchange', render);
-  render();
+  (async () => {
+    const who = document.getElementById('whoami');
+    try {
+      const me = await api('GET', '/api/me');
+      who.replaceChildren(`로그인: ${me.username} `, h('button', { class: 'ghost', id: 'top-logout', onclick: guard(logout) }, '로그아웃'));
+    } catch (e) { return; }
+    render();
+  })();
 })();
