@@ -1,7 +1,7 @@
 # 접근 제어·세션 검증 기록
 
-실행 시각: 2026-11-19T00:58:12.943Z  
-대상: `로컬 서버 + 임시 PostgreSQL 스키마`  
+실행 시각: 2026-11-19T02:51:29.927Z  
+대상: `배포본 https://plan-do-see-diary-hb5j.onrender.com`  
 비밀번호·세션 토큰은 `***` / `<masked>` 로 가렸습니다. 아래 표의 기준 번호는 과제 7 통과 기준입니다.
 
 | 결과 | 기준 | 내용 |
@@ -47,14 +47,14 @@
 ## 0. 계정 두 개 만들고 각자 자료 넣기 (T07-C116, C94)
 
 **A 가입**
-- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"alice_f033a1","password":"***"}`
-- 응답: `201` Set-Cookie: sid=<masked> `{"ok":true,"username":"alice_f033a1"}`
+- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"alice_e9ed71","password":"***"}`
+- 응답: `201` Set-Cookie: sid=<masked> `{"ok":true,"username":"alice_e9ed71"}`
 
 > PASS · T07-C94 · 가입 화면(API)에서 새 계정을 만들 수 있다
 
 **B 가입**
-- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"bob_f033a1","password":"***"}`
-- 응답: `201` Set-Cookie: sid=<masked> `{"ok":true,"username":"bob_f033a1"}`
+- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"bob_e9ed71","password":"***"}`
+- 응답: `201` Set-Cookie: sid=<masked> `{"ok":true,"username":"bob_e9ed71"}`
 
 A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1} / B 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1} (비밀번호는 기록하지 않음)
 
@@ -63,55 +63,55 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 ## 1. A로 로그인한 채 B의 자료 읽기·수정·삭제 (C117~C119, C121)
 
 **A→B 계획 읽기**
-- 요청: `GET /api/plans/2` 쿠키:있음(sid=<masked>)
+- 요청: `GET /api/plans/5` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 **A→B 할 일 읽기**
-- 요청: `GET /api/tasks/3` 쿠키:있음(sid=<masked>)
+- 요청: `GET /api/tasks/10` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 > PASS · T07-C117 · A가 B의 자료(계획·할 일)를 읽으려는 요청이 거절된다
 
 **A→B 계획 수정**
-- 요청: `PUT /api/plans/2` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}`
+- 요청: `PUT /api/plans/5` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}`
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 **A→B 할 일 수정**
-- 요청: `PUT /api/tasks/3` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","priority":"low","estimated_minutes":1}`
+- 요청: `PUT /api/tasks/10` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","priority":"low","estimated_minutes":1}`
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 **A→B 할 일 완료 처리**
-- 요청: `POST /api/tasks/4/complete` 쿠키:있음(sid=<masked>) 본문:`{"idempotency_key":"steal"}`
+- 요청: `POST /api/tasks/11/complete` 쿠키:있음(sid=<masked>) 본문:`{"idempotency_key":"steal"}`
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 **A→B 계획 아래 새 할 일 만들기**
-- 요청: `POST /api/tasks` 쿠키:있음(sid=<masked>) 본문:`{"plan_id":2,"title":"INJECT","priority":"low","estimated_minutes":1}`
+- 요청: `POST /api/tasks` 쿠키:있음(sid=<masked>) 본문:`{"plan_id":5,"title":"INJECT","priority":"low","estimated_minutes":1}`
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 **A→B 할 일에 실행 기록 만들기**
-- 요청: `POST /api/runs` 쿠키:있음(sid=<masked>) 본문:`{"task_id":4,"started_at":"2026-11-17T01:00:00Z","ended_at":"2026-11-17T02:00:00Z"}`
+- 요청: `POST /api/runs` 쿠키:있음(sid=<masked>) 본문:`{"task_id":11,"started_at":"2026-11-17T01:00:00Z","ended_at":"2026-11-17T02:00:00Z"}`
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 **A→B 회고 메모 반영**
-- 요청: `POST /api/retro/notes/2/apply` 쿠키:있음(sid=<masked>) 본문:`{}`
+- 요청: `POST /api/retro/notes/3/apply` 쿠키:있음(sid=<masked>) 본문:`{}`
 - 응답: `404` `{"error":"개선점을 찾을 수 없습니다."}`
 
 **A→B 회고 메모 쓰기**
-- 요청: `POST /api/retro/notes` 쿠키:있음(sid=<masked>) 본문:`{"plan_id":2,"note":"INJECT"}`
+- 요청: `POST /api/retro/notes` 쿠키:있음(sid=<masked>) 본문:`{"plan_id":5,"note":"INJECT"}`
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 > PASS · T07-C118 · A가 B의 자료를 고치려는 요청(계획·할 일 수정, 완료 처리, 남의 계획 밑에 쓰기)이 모두 거절된다
 
 **A→B 실행 기록 삭제**
-- 요청: `DELETE /api/runs/2` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/runs/6` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"실행 기록을 찾을 수 없습니다."}`
 
 **A→B 할 일 삭제**
-- 요청: `DELETE /api/tasks/3` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/tasks/10` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 **A→B 계획 삭제**
-- 요청: `DELETE /api/plans/2` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/plans/5` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 > PASS · T07-C119 · A가 B의 자료를 지우려는 요청이 거절된다
@@ -119,23 +119,23 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 ## 2. 반대 방향: B로 A의 자료 읽기·수정·삭제 (C120)
 
 **B→A 계획 읽기**
-- 요청: `GET /api/plans/1` 쿠키:있음(sid=<masked>)
+- 요청: `GET /api/plans/4` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 **B→A 계획 수정**
-- 요청: `PUT /api/plans/1` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}`
+- 요청: `PUT /api/plans/4` 쿠키:있음(sid=<masked>) 본문:`{"title":"HACKED","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}`
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 **B→A 할 일 삭제**
-- 요청: `DELETE /api/tasks/1` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/tasks/8` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"할 일을 찾을 수 없습니다."}`
 
 **B→A 실행 기록 삭제**
-- 요청: `DELETE /api/runs/1` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/runs/5` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"실행 기록을 찾을 수 없습니다."}`
 
 **B→A 계획 삭제**
-- 요청: `DELETE /api/plans/1` 쿠키:있음(sid=<masked>)
+- 요청: `DELETE /api/plans/4` 쿠키:있음(sid=<masked>)
 - 응답: `404` `{"error":"계획을 찾을 수 없습니다."}`
 
 > PASS · T07-C120 · 반대 방향(B→A)도 읽기·수정·삭제가 똑같이 거절된다
@@ -146,19 +146,19 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 
 - A: 전 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1} → 후 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1}
 - B: 전 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1} → 후 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"notes":1}
-- B 할 일 제목(변조·삽입 없음): ["BOB-f033a1-task1","BOB-f033a1-task2"]
+- B 할 일 제목(변조·삽입 없음): ["BOB-e9ed71-task1","BOB-e9ed71-task2"]
 
 > PASS · T07-C122 · 거절 앞뒤 자료 건수가 같고, 반대편에 새로 생긴 자료(INJECT)·변조(HACKED)가 없다
 
 ## 4. 주소·헤더·본문에 다른 계정을 적어 보내기 (C123)
 
 **A가 주소·헤더에 B를 적어 계획 목록 요청**
-- 요청: `GET /api/plans?user_id=2&username=bob_f033a1` 쿠키:있음(sid=<masked>) 추가헤더:`{"X-User-Id":"2","X-Username":"bob_f033a1","X-Forwarded-User":"bob_f033a1"}`
+- 요청: `GET /api/plans?user_id=3&username=bob_e9ed71` 쿠키:있음(sid=<masked>) 추가헤더:`{"X-User-Id":"3","X-Username":"bob_e9ed71","X-Forwarded-User":"bob_e9ed71"}`
 - 응답: `200` `(본문 생략)`
 
 **A가 본문에 user_id=B 를 적어 계획 생성**
-- 요청: `POST /api/plans` 쿠키:있음(sid=<masked>) 본문:`{"title":"ALICE-f033a1-spoof","user_id":2,"owner":"bob_f033a1","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}` (user_id 값은 B의 id)
-- 응답: `201` `{"id":3,"title":"ALICE-f033a1-spoof","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1,"improvement_note_id":null,"created_at":"2026-11-19T00:58:08.308Z","updated_at":"2026-11-19T00:58:08.308Z","revisions":[{"id":3,"plan_id":3,"revisi`
+- 요청: `POST /api/plans` 쿠키:있음(sid=<masked>) 본문:`{"title":"ALICE-e9ed71-spoof","user_id":3,"owner":"bob_e9ed71","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1}` (user_id 값은 B의 id)
+- 응답: `201` `{"id":6,"title":"ALICE-e9ed71-spoof","period_start":"2026-11-16","period_end":"2026-11-22","priority":"low","success_criteria":"x","estimated_minutes":1,"improvement_note_id":null,"created_at":"2026-11-19T02:50:27.661Z","updated_at":"2026-11-19T02:50:27.661Z","revisions":[{"id":7,"plan_id":6,"revisi`
 
 > PASS · T07-C123 · 주소·헤더·본문에 B를 적어 보내도 돌아온 것은 A의 자료뿐이고, 만들어진 것은 A의 계정에 속하며 B의 자료는 변하지 않는다
 
@@ -168,8 +168,8 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 - 요청: `GET /api/plans` 쿠키:없음
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
-**비로그인 GET /api/plans/2**
-- 요청: `GET /api/plans/2` 쿠키:없음
+**비로그인 GET /api/plans/5**
+- 요청: `GET /api/plans/5` 쿠키:없음
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
 **비로그인 GET /api/tasks**
@@ -188,12 +188,12 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 - 요청: `GET /api/export` 쿠키:없음
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
-**비로그인 PUT /api/tasks/3**
-- 요청: `PUT /api/tasks/3` 쿠키:없음 본문:`{"title":"x","priority":"low","estimated_minutes":1}`
+**비로그인 PUT /api/tasks/10**
+- 요청: `PUT /api/tasks/10` 쿠키:없음 본문:`{"title":"x","priority":"low","estimated_minutes":1}`
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
-**비로그인 DELETE /api/tasks/3**
-- 요청: `DELETE /api/tasks/3` 쿠키:없음
+**비로그인 DELETE /api/tasks/10**
+- 요청: `DELETE /api/tasks/10` 쿠키:없음
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
 **비로그인 POST /api/runs**
@@ -247,11 +247,11 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 - 응답: `200` `(본문 생략)`
 
 **A가 B 제목으로 검색**
-- 요청: `GET /api/tasks?q=BOB-f033a1` 쿠키:있음(sid=<masked>)
+- 요청: `GET /api/tasks?q=BOB-e9ed71` 쿠키:있음(sid=<masked>)
 - 응답: `200` `{"sort":"due_date","dir":"asc","tie_breaker":"id asc","tasks":[]}`
 
 **A가 B의 계획 id로 필터**
-- 요청: `GET /api/tasks?plan_id=2` 쿠키:있음(sid=<masked>)
+- 요청: `GET /api/tasks?plan_id=5` 쿠키:있음(sid=<masked>)
 - 응답: `200` `{"sort":"due_date","dir":"asc","tie_breaker":"id asc","tasks":[]}`
 
 > PASS · T07-C125 · A의 계획·할 일·실행 기록·회고·근거·내보내기 응답, 검색·필터 결과 어디에도 B 자료가 하나도 없다
@@ -259,8 +259,8 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 ## 7. 세션·로그아웃·비밀번호 변경 (C95, C96, C108~C115)
 
 **A 로그인**
-- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"alice_f033a1","password":"***"}`
-- 응답: `200` Set-Cookie: sid=<masked> `{"ok":true,"username":"alice_f033a1"}`
+- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"alice_e9ed71","password":"***"}`
+- 응답: `200` Set-Cookie: sid=<masked> `{"ok":true,"username":"alice_e9ed71"}`
 
 > PASS · T07-C95 · 만든 계정으로 로그인할 수 있다
 
@@ -284,7 +284,7 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 
 > PASS · T07-C108 · 로그인 뒤 사용자 식별은 세션(서버 저장 토큰)으로 한다
 
-- DB sessions 예시: created_at=2026-11-19T00:58:08.144Z
+- DB sessions 예시: created_at=2026-11-19T02:50:09.650Z
 
 > PASS · T07-C111 · 세션에 만료 시각이 있고 유효 기간(3600초=1시간)이 쿠키 Max-Age와 DB expires_at 에 기록된다
 
@@ -305,7 +305,7 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 - 응답: `401` `{"error":"로그인이 필요합니다."}`
 
 **옛 비밀번호로 로그인**
-- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"bob_f033a1","password":"***"}`
+- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"bob_e9ed71","password":"***"}`
 - 응답: `401` `{"error":"아이디 또는 비밀번호가 올바르지 않습니다."}`
 
 > PASS · T07-C114 · 비밀번호를 바꾸면 이전에 발급된 세션과 옛 비밀번호는 더 이상 통하지 않는다
@@ -313,28 +313,28 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 ## 8. 가입 중복 / 로그인 실패 문구 (C98, C99)
 
 **같은 아이디 재가입**
-- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"alice_f033a1","password":"***"}`
+- 요청: `POST /api/signup` 쿠키:없음 본문:`{"username":"alice_e9ed71","password":"***"}`
 - 응답: `409` `{"error":"이미 사용 중인 아이디입니다."}`
 
 > PASS · T07-C98 · 같은 아이디로 두 번 가입되지 않는다(409)
 
 **아이디는 맞고 비밀번호가 틀림**
-- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"alice_f033a1","password":"***"}`
+- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"alice_e9ed71","password":"***"}`
 - 응답: `401` `{"error":"아이디 또는 비밀번호가 올바르지 않습니다."}`
 
 **없는 아이디**
-- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"nobody_f033a1","password":"***"}`
+- 요청: `POST /api/login` 쿠키:없음 본문:`{"username":"nobody_e9ed71","password":"***"}`
 - 응답: `401` `{"error":"아이디 또는 비밀번호가 올바르지 않습니다."}`
 
 > PASS · T07-C99 · 비밀번호만 틀렸을 때와 아이디가 없을 때의 안내 문구·상태 코드가 같다
 
 ## 9. 비밀번호 저장 (C101~C107)
 
-- DB 저장값(계정 A): `$2b$12$MmmKn708Ruoz5CuFE4vpE.arVZLnzv9yUpfSUh/Dv0IQWFZCVJLhm`  ← bcrypt 해시(형식 $2a/$2b$비용$솔트+해시)
+- DB 저장값(계정 A): `$2b$12$6YiauaX1IySXtyad.6XU4OAsjuDwiKoeLpeI02UxeP8Ai7rLlXz.G`  ← bcrypt 해시(형식 $2a/$2b$비용$솔트+해시)
 
 - 같은 비밀번호로 만든 두 계정의 저장값:
-  - `$2b$12$EEZ2YTbhrzpQ.aMUGgFlDOHK4rxZjG2qexItusv/afYhe6x0xcFdG`
-  - `$2b$12$QXOB78ywWCvWf4JhPfvjF.Jq/v2uMGrcwy7awj0QWQx9zrv8WiOAm`
+  - `$2b$12$.6ZZgqTyxC8Iww.XLHl5Z.n/BuV3/PkeXg.YgrK1bXpPDbBsipqCC`
+  - `$2b$12$KoCsnZV5AM/yiRXCeXvDWumJciJT7yyD0nJhcnDKk4aNyWLqxXHiS`
 
 > PASS · T07-C103 · 계정 하나의 비밀번호가 DB에 저장된 모습(bcrypt 해시)이 기록에 있고, 입력한 글자가 그대로 보이지 않는다
 
@@ -387,6 +387,8 @@ A 자료 건수 {"plans":1,"revisions":1,"tasks":2,"runs":1,"completions":1,"not
 > PASS · T07-C126 · 거절을 만드는 소스 위치(WHERE ... user_id = ? 조건, uid(), 로그인 확인)가 위에 줄 번호와 함께 있다
 
 ## 12. 배포본 정리 / 서버 출력 검사
+
+- 배포본에 만든 테스트 계정(B, C, D)을 모두 삭제했다.
 
 > PASS · T07-C105 · 로그인 요청·응답을 적은 이 기록에 비밀번호 원문이 남아 있지 않다
 
